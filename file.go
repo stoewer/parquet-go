@@ -738,8 +738,11 @@ type FilePages struct {
 	dataOffset int64
 	dictOffset int64
 	index      int
-	skip       int64
 	dictionary Dictionary
+
+	skip int64 // the numbers of rows to skip (set by SeekToRow read by ReadPage)
+	page Page  // current page
+	row  int64 // first row of the current page
 
 	bufferSize int
 }
@@ -781,6 +784,29 @@ func (f *FilePages) ReadPage() (Page, error) {
 		return nil, io.EOF
 	}
 
+	if f.page != nil && f.skip > 0 && f.page.NumRows() > 0 {
+		if f.skip < f.page.NumRows() {
+			tail := f.page.Slice(f.skip, f.page.NumRows())
+			Release(f.page)
+			f.row += f.skip
+			f.skip = 0
+			f.page = tail // we have to retain a page everytime we store it locally
+			Retain(tail)
+
+			return tail, nil
+		}
+	}
+
+	if f.page != nil {
+		f.row += f.page.NumRows()
+		f.skip -= f.page.NumRows()
+		if f.skip < 0 {
+			f.skip = 0
+		}
+		Release(f.page)
+		f.page = nil
+	}
+
 	// seekToRowStart indicates whether we are in the process of seeking to the start
 	// of requested row to read, as opposed to reading sequentially values and moving through pages
 	seekToRowStart := f.skip > 0
@@ -806,6 +832,22 @@ func (f *FilePages) ReadPage() (Page, error) {
 		// call f.rbuf.Discard to skip the page data and realign f.rbuf with the next page header
 		if header.Type == format.DictionaryPage && f.dictionary != nil {
 			f.rbuf.Discard(int(header.CompressedPageSize))
+			continue
+		}
+
+		if header.Type != format.DictionaryPage &&
+			header.DataPageHeaderV2 != nil &&
+			header.DataPageHeaderV2.NumRows > 0 &&
+			f.skip >= int64(header.DataPageHeaderV2.NumRows) {
+
+			f.skip -= int64(header.DataPageHeaderV2.NumRows)
+			f.rbuf.Discard(int(header.CompressedPageSize))
+
+			f.index++
+			f.row += int64(header.DataPageHeaderV2.NumRows)
+			Release(f.page)
+			f.page = nil // TODO is this necessary?
+
 			continue
 		}
 
@@ -860,10 +902,18 @@ func (f *FilePages) ReadPage() (Page, error) {
 			repLvls := page.RepetitionLevels()
 			if len(repLvls) > 0 && repLvls[0] == 0 {
 				// avoid page slice if page starts at a row boundary
+				Release(f.page)
+				f.page = page // TODO do we need to call buffer.ref()? add to test
+				Retain(page)
+
 				return page, nil
 			}
 			tail := page.Slice(0, page.NumRows())
 			Release(page)
+
+			f.page = tail
+			Retain(tail)
+
 			return tail, nil
 		}
 
@@ -876,10 +926,14 @@ func (f *FilePages) ReadPage() (Page, error) {
 		} else {
 			tail := page.Slice(f.skip, numRows)
 			Release(page)
+			f.row += f.skip
 			f.skip = 0
+			f.page = tail
+			Retain(tail)
 			return tail, nil
 		}
 
+		f.row += numRows
 		f.skip -= numRows
 	}
 }
