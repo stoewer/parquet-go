@@ -3,6 +3,7 @@ package parquet
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -734,12 +735,13 @@ type FilePages struct {
 	protocol thrift.CompactProtocol
 	decoder  thrift.Decoder
 
-	baseOffset int64
-	dataOffset int64
-	dictOffset int64
-	index      int
-	skip       int64
-	dictionary Dictionary
+	baseOffset    int64
+	dataOffset    int64
+	dictOffset    int64
+	sectionOffset int64
+	index         int
+	skip          int64
+	dictionary    Dictionary
 
 	bufferSize int
 }
@@ -748,6 +750,7 @@ func (f *FilePages) init(c *FileColumnChunk, reader io.ReaderAt) {
 	f.chunk = c
 	f.baseOffset = c.chunk.MetaData.DataPageOffset
 	f.dataOffset = f.baseOffset
+	f.sectionOffset = f.baseOffset
 	f.bufferSize = c.file.config.ReadBufferSize
 
 	if c.chunk.MetaData.DictionaryPageOffset != 0 {
@@ -1000,7 +1003,24 @@ func (f *FilePages) SeekToRow(rowIndex int64) (err error) {
 		if index < 0 {
 			return ErrSeekOutOfRange
 		}
+
+		var rbufOffset int
+		if f.rbuf.Buffered() > 0 {
+			rbufOffset = f.rbuf.Size() - f.rbuf.Buffered()
+		}
+		skipBytes := pages[index].Offset - f.sectionOffset - int64(rbufOffset)
+
+		if skipBytes < int64(f.rbuf.Buffered()) {
+			n, err := f.rbuf.Discard(int(skipBytes))
+
+			f.skip = rowIndex - pages[index].FirstRowIndex
+			f.index = index
+			return err
+		}
+
 		_, err = f.section.Seek(pages[index].Offset-f.baseOffset, io.SeekStart)
+		f.sectionOffset = pages[index].Offset
+
 		f.skip = rowIndex - pages[index].FirstRowIndex
 		f.index = index
 	}
@@ -1018,6 +1038,7 @@ func (f *FilePages) Close() error {
 	f.baseOffset = 0
 	f.dataOffset = 0
 	f.dictOffset = 0
+	f.sectionOffset = 0
 	f.index = 0
 	f.skip = 0
 	f.dictionary = nil
