@@ -727,7 +727,7 @@ func (c *FileColumnChunk) readBloomFilter(reader io.ReaderAt) (*FileBloomFilter,
 
 type FilePages struct {
 	chunk    *FileColumnChunk
-	rbuf     *bufio.Reader
+	rbuf     *offsetAwareBufioReader
 	rbufpool *sync.Pool
 	section  io.SectionReader
 
@@ -756,7 +756,9 @@ func (f *FilePages) init(c *FileColumnChunk, reader io.ReaderAt) {
 	}
 
 	f.section = *io.NewSectionReader(reader, f.baseOffset, c.chunk.MetaData.TotalCompressedSize)
-	f.rbuf, f.rbufpool = getBufioReader(&f.section, f.bufferSize)
+	rbuf, rbufpool := getBufioReader(&f.section, f.bufferSize)
+	f.rbuf = &offsetAwareBufioReader{rbuf, f.baseOffset}
+	f.rbufpool = rbufpool
 	f.decoder.Reset(f.protocol.NewReader(f.rbuf))
 }
 
@@ -946,7 +948,7 @@ func (f *FilePages) readDataPageV2(header *format.PageHeader, page *buffer) (Pag
 	return f.chunk.column.decodeDataPageV2(DataPageHeaderV2{header.DataPageHeaderV2}, page, f.dictionary, header.UncompressedPageSize)
 }
 
-func (f *FilePages) readPage(header *format.PageHeader, reader *bufio.Reader) (*buffer, error) {
+func (f *FilePages) readPage(header *format.PageHeader, reader *offsetAwareBufioReader) (*buffer, error) {
 	page := buffers.get(int(header.CompressedPageSize))
 	defer page.unref()
 
@@ -1010,7 +1012,7 @@ func (f *FilePages) SeekToRow(rowIndex int64) (err error) {
 
 // Close closes the page reader.
 func (f *FilePages) Close() error {
-	putBufioReader(f.rbuf, f.rbufpool)
+	putBufioReader(f.rbuf.Reader(), f.rbufpool)
 	f.chunk = nil
 	f.section = io.SectionReader{}
 	f.rbuf = nil
