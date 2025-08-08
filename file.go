@@ -1106,3 +1106,117 @@ func (r *optimisticFileReaderAt) ReadAt(p []byte, off int64) (n int, err error) 
 	rn, err := r.reader.ReadAt(p, off)
 	return n + rn, err
 }
+
+type offsetAwareBufioReader struct {
+	r   *bufio.Reader
+	off int64
+}
+
+func (r *offsetAwareBufioReader) Reader() *bufio.Reader {
+	return r.r
+}
+
+func (r *offsetAwareBufioReader) Offset() int64 {
+	return r.off
+}
+
+func (r *offsetAwareBufioReader) Read(p []byte) (n int, err error) {
+	n, err = r.r.Read(p)
+	r.off += int64(n)
+	return n, err
+}
+
+func (r *offsetAwareBufioReader) ReadByte() (byte, error) {
+	b, err := r.r.ReadByte()
+	if err == nil {
+		r.off++
+	}
+	return b, err
+}
+
+func (r *offsetAwareBufioReader) ReadRune() (rune, int, error) {
+	ru, size, err := r.r.ReadRune()
+	if err == nil {
+		r.off += int64(size)
+	}
+	return ru, size, err
+}
+
+func (r *offsetAwareBufioReader) UnreadRune() error {
+	err := r.r.UnreadRune()
+	if err == nil {
+		_, size, _ := r.r.ReadRune()
+		r.off -= int64(size)
+		r.r.UnreadRune()
+	}
+	return err
+}
+
+func (r *offsetAwareBufioReader) UnreadByte() error {
+	err := r.r.UnreadByte()
+	if err == nil {
+		r.off--
+	}
+	return err
+}
+
+func (r *offsetAwareBufioReader) ReadSlice(delim byte) (line []byte, err error) {
+	line, err = r.r.ReadSlice(delim)
+	r.off += int64(len(line))
+	return line, err
+}
+
+func (r *offsetAwareBufioReader) ReadLine() (line []byte, isPrefix bool, err error) {
+	line, isPrefix, err = r.r.ReadLine()
+	r.off += int64(len(line))
+	return line, isPrefix, err
+}
+
+func (r *offsetAwareBufioReader) ReadBytes(delim byte) ([]byte, error) {
+	bytes, err := r.r.ReadBytes(delim)
+	r.off += int64(len(bytes))
+	return bytes, err
+}
+
+func (r *offsetAwareBufioReader) ReadString(delim byte) (string, error) {
+	str, err := r.r.ReadString(delim)
+	r.off += int64(len(str))
+	return str, err
+}
+
+func (r *offsetAwareBufioReader) WriteTo(w io.Writer) (n int64, err error) {
+	n, err = r.r.WriteTo(w)
+	r.off += n
+	return n, err
+}
+
+func (r *offsetAwareBufioReader) Peek(n int) ([]byte, error) {
+	return r.r.Peek(n)
+}
+
+func (r *offsetAwareBufioReader) Discard(n int) (discarded int, err error) {
+	discarded, err = r.r.Discard(n)
+	r.off += int64(discarded)
+	return discarded, err
+}
+
+func (r *offsetAwareBufioReader) Buffered() int {
+	return r.r.Buffered()
+}
+
+func (r *offsetAwareBufioReader) Size() int {
+	return r.r.Size()
+}
+
+func (r *offsetAwareBufioReader) Reset(reader io.Reader) {
+	// Check if the reader is a SectionReader
+	if sr, ok := reader.(*io.SectionReader); ok {
+		// Get the underlying reader, offset, and size
+		_, offset, _ := sr.Outer()
+		r.off = offset
+	} else {
+		// If not a SectionReader, reset the offset
+		r.off = 0
+	}
+	r.r.Reset(reader)
+}
