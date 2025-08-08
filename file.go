@@ -1002,6 +1002,22 @@ func (f *FilePages) SeekToRow(rowIndex int64) (err error) {
 		if index < 0 {
 			return ErrSeekOutOfRange
 		}
+
+		if f.index == index {
+			f.skip = rowIndex - pages[index].FirstRowIndex
+			return nil
+		}
+
+		skipBytes := pages[index].Offset - f.rbuf.Offset()
+
+		if skipBytes > 0 && skipBytes < int64(f.rbuf.Buffered()) {
+			_, err = f.rbuf.Discard(int(skipBytes))
+
+			f.skip = rowIndex - pages[index].FirstRowIndex
+			f.index = index
+			return err
+		}
+
 		_, err = f.section.Seek(pages[index].Offset-f.baseOffset, io.SeekStart)
 		f.skip = rowIndex - pages[index].FirstRowIndex
 		f.index = index
